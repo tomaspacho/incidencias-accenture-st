@@ -239,6 +239,26 @@
     }
 
     .cargando-txt.visible { display: block; }
+
+    /* CAMBIO: aviso discreto para fallos silenciosos (red o backend) que llegan
+       DESPUÉS de que el usuario ya vio el ✅. No bloquea nada, no interrumpe el
+       flujo — aparece abajo y se puede tocar para ocultarlo. */
+    .aviso-fondo {
+      display: none;
+      width: 100%;
+      max-width: 480px;
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: var(--radius);
+      border: 1.5px solid var(--error-border);
+      background: var(--error-bg);
+      color: var(--error-text);
+      font-size: 13px;
+      line-height: 1.4;
+      cursor: pointer;
+    }
+
+    .aviso-fondo.visible { display: block; }
   </style>
 </head>
 <body>
@@ -282,11 +302,19 @@
     <div id="alerta-cuerpo"></div>
   </div>
 
+  <!-- CAMBIO: nuevo bloque para el aviso discreto de fallo silencioso -->
+  <div class="aviso-fondo" id="aviso-fondo" onclick="ocultarAvisoFondo()">
+    ⚠️ Uno de tus últimos reportes no se guardó correctamente. Tocá para reportarlo de nuevo.
+  </div>
+
   <script>
     const BACKEND_URL = "https://script.google.com/macros/s/AKfycbzsMFqhsJi0mionxmAHizqCAHBhlC8sX55kRg2HHkQsedUXPBoFZixoTPyfcZ-TV14s/exec";
 
     let fotoBase64 = null;
 
+    // CAMBIO: esta función ya no se usa en enviarReporte() (el reporte ya no bloquea
+    // la UI), pero se deja definida por si en el futuro se quiere volver a mostrar
+    // un estado de "cargando" en algún otro flujo.
     function setEstado(cargando) {
       const btn = document.getElementById("btn-reportar");
       const btnFoto = document.getElementById("btn-foto");
@@ -307,6 +335,15 @@
 
     function ocultarAlerta() {
       document.getElementById("alerta").className = "alerta";
+    }
+
+    // CAMBIO: funciones nuevas para el aviso discreto de fondo
+    function mostrarAvisoFondo() {
+      document.getElementById("aviso-fondo").classList.add("visible");
+    }
+
+    function ocultarAvisoFondo() {
+      document.getElementById("aviso-fondo").classList.remove("visible");
     }
 
     // Comprime la foto en el celular antes de mandarla (más rápido y liviano)
@@ -362,7 +399,15 @@
       document.getElementById("foto-label").textContent = "Agregar foto (opcional)";
     }
 
-    async function enviarReporte() {
+    // El reporte ya no espera NINGUNA respuesta para mostrar el ✅ — eso corre
+    // instantáneo. Todo el trabajo real (guardar en Sheets, subir foto a Drive,
+    // comparar con Gemini) va en un solo request fire-and-forget.
+    //
+    // CAMBIO: se agrega .then()/.catch() al fetch para revisar la respuesta CUANDO
+    // LLEGUE (sin esperarla para nada de la UI). Si el request falla de red, o si
+    // llega pero el backend respondió { ok: false }, se muestra el aviso discreto
+    // de abajo. No reintroduce espera ni vuelve a deshabilitar el botón.
+    function enviarReporte() {
       const texto = document.getElementById("reporte").value.trim();
       if (!texto) {
         mostrarAlerta("error", "Campo vacío", "Escribí el problema antes de reportar.");
@@ -370,39 +415,26 @@
       }
 
       ocultarAlerta();
-      setEstado(true);
 
-      try {
-        // CAMBIO: se saca "foto" de este payload — el backend nunca la usaba acá,
-        // solo sumaba peso y demora a la request que tiene que ser instantánea
-        const fd1 = new FormData();
-        fd1.append("data", JSON.stringify({ accion: "guardar", texto }));
-        const res1 = await fetch(BACKEND_URL, { method: "POST", body: fd1 });
-        const data1 = await res1.json();
+      const fotoParaEnviar = fotoBase64;
 
-        if (!data1.ok) {
-          mostrarAlerta("error", "Error", data1.error || "Algo falló. Intentá de nuevo.");
-          return;
-        }
+      mostrarAlerta("success", "✅ Reportado correctamente", "El problema quedó registrado.");
+      document.getElementById("reporte").value = "";
+      quitarFoto();
 
-        // Se guarda la foto en una variable local ANTES de quitarFoto(),
-        // porque quitarFoto() pone fotoBase64 en null y la necesitamos para el fetch 2
-        const fotoParaEnviar = fotoBase64;
+      const fd = new FormData();
+      fd.append("data", JSON.stringify({ accion: "reportar", texto, foto: fotoParaEnviar }));
 
-        mostrarAlerta("success", "✅ Reportado correctamente", "El problema quedó registrado.");
-        document.getElementById("reporte").value = "";
-        quitarFoto();
-
-        // Paso 2 — dispara la foto + el análisis de duplicados en segundo plano, sin esperar (fire-and-forget)
-        const fd2 = new FormData();
-        fd2.append("data", JSON.stringify({ accion: "gemini", texto, id: data1.id, fila: data1.fila, foto: fotoParaEnviar }));
-        fetch(BACKEND_URL, { method: "POST", body: fd2 }).catch(() => {});
-
-      } catch (err) {
-        mostrarAlerta("error", "Error de conexión", "No se pudo conectar. Revisá tu internet e intentá de nuevo.");
-      } finally {
-        setEstado(false);
-      }
+      fetch(BACKEND_URL, { method: "POST", body: fd })
+        .then(res => res.json())
+        .then(data => {
+          if (!data.ok) {
+            mostrarAvisoFondo();
+          }
+        })
+        .catch(() => {
+          mostrarAvisoFondo();
+        });
     }
   </script>
 
